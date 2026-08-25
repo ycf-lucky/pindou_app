@@ -10,6 +10,7 @@ st.title("🧩 MARD 221 拼豆图纸生成器")
 
 # 侧边栏设置
 st.sidebar.header("设置参数")
+st.sidebar.caption("👉 点击左上角箭头，可以展开或收起设置面板。")
 
 # 加载 221 色卡
 try:
@@ -173,6 +174,7 @@ if uploaded_file is not None:
 
     # 在网页上显示
     st.subheader("生成的拼豆图纸")
+    st.caption("💡 提示：苹果用户可长按下方图片保存至相册；安卓用户可直接点击下方的下载按钮。")
     st.image(preview, use_container_width=True)
 
     # 下载按钮
