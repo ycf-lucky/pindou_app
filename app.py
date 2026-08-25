@@ -6,11 +6,14 @@ import io
 
 # ========== 页面设置 ==========
 st.set_page_config(page_title="拼豆图纸生成器", layout="wide")
+
+# 醒目提示：告知侧边栏位置
+st.info("💡 **操作提示：** 请点击屏幕 **左上角的 `>>` 箭头** 展开设置面板，在这里可以调整图板的宽度、高度和颜色以及数量。")
+
 st.title("🧩 MARD 221 拼豆图纸生成器")
 
 # 侧边栏设置
 st.sidebar.header("设置参数")
-st.sidebar.caption("👉 点击左上角箭头，可以展开或收起设置面板。")
 
 # 加载 221 色卡
 try:
