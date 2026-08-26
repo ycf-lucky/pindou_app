@@ -3,16 +3,17 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 from collections import Counter
 import io
+import requests
+import base64
+import time
 
 # ========== 页面设置 ==========
 st.set_page_config(page_title="拼豆图纸生成器", layout="wide")
 
-# 醒目提示：告知侧边栏位置
-st.info("💡 **操作提示：** 请点击屏幕 **左上角的 `>>` 箭头** 展开设置面板，在这里可以调整图板的宽度、高度和颜色以及数量。")
+st.info("💡 **操作提示：** 请点击屏幕 **左上角的 `>>` 箭头** 展开设置面板。")
 
 st.title("🧩 MARD 221 拼豆图纸生成器")
 
-# 侧边栏设置
 st.sidebar.header("设置参数")
 
 # 加载 221 色卡
@@ -29,12 +30,17 @@ except FileNotFoundError:
     st.sidebar.error("找不到 colors.json 文件，请确保它和 app.py 在同一文件夹！")
     st.stop()
 
-# 用户输入参数
+# ========== 读取密钥（注意：本地必须有 .streamlit/secrets.toml） ==========
+api_key = st.secrets["ALI_API_KEY"]
+
+# ========== 侧边栏参数 ==========
 GRID_W = st.sidebar.number_input("宽度 (颗)", min_value=20, max_value=150, value=48, step=1)
 GRID_H = st.sidebar.number_input("高度 (颗)", min_value=20, max_value=150, value=68, step=1)
 max_colors = st.sidebar.slider("最多使用颜色数", min_value=6, max_value=64, value=24)
 
-# 计算总数
+# 核心开关：是否开启AI动漫转换
+use_ai = st.sidebar.toggle("✨ 开启 AI 变 Q版动漫", value=False)
+
 total_beads = GRID_W * GRID_H
 st.sidebar.info(f"总豆子数量：{total_beads} 颗")
 
@@ -47,10 +53,61 @@ else:
 uploaded_file = st.file_uploader("上传你想DIY的照片", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # 处理图片
     img = Image.open(uploaded_file).convert("RGB")
 
-    # 裁剪逻辑
+    # ========== AI 动漫转换模块 ==========
+    if use_ai:
+        st.write("✨ 正在将照片转换为Q版动漫，请稍候（可能需要30秒）...")
+
+        # 压缩图片以便发送给 API
+        img.thumbnail((1024, 1024))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=95)
+        img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        # 调用阿里云 qwen-image-3.0-pro 模型
+        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        prompt_text = (
+            "将照片中的真实人物转换为平涂Q版插画。"
+            "要求：比例为大头小身体的Q版（Chibi）；大眼睛，简单的高光；"
+            "纯平涂（Flat），无阴影，无立体感，无3D反光；"
+            "线条感清晰，颜色使用大色块；背景为纯白色，无杂物。"
+        )
+
+        payload = {
+            "model": "qwen-image-3.0-pro",
+            "input": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"image": f"data:image/jpeg;base64,{img_base64}"},
+                            {"text": prompt_text}
+                        ]
+                    }
+                ]
+            }
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                data = response.json()
+                image_url = data["output"]["choices"][0]["message"]["content"][0]["image"]
+                # 从 URL 下载图片并重新加载
+                img_response = requests.get(image_url)
+                img = Image.open(io.BytesIO(img_response.content)).convert("RGB")
+            else:
+                st.error(f"AI 生成失败，将使用原图继续：{response.text}")
+        except Exception as e:
+            st.error(f"AI 网络错误，将使用原图继续：{e}")
+
+    # ========== 裁剪逻辑 ==========
     target = GRID_W / GRID_H
     w, h = img.size
     if w / h > target:
@@ -64,7 +121,7 @@ if uploaded_file is not None:
     img = img.resize((GRID_W, GRID_H), Image.LANCZOS)
 
 
-    # 匹配颜色
+    # ========== 匹配颜色 ==========
     def nearest_color(rgb):
         r, g, b = rgb
         best_code = None
@@ -82,7 +139,6 @@ if uploaded_file is not None:
         for x in range(GRID_W):
             all_pixel_codes.append(nearest_color(img.getpixel((x, y))))
 
-    # 提取高频颜色，清理噪点
     top_codes = [code for code, _ in Counter(all_pixel_codes).most_common(max_colors)]
     final_palette = {code: MARD_COLORS[code] for code in top_codes}
 
@@ -104,7 +160,7 @@ if uploaded_file is not None:
     all_pixel_codes = cleaned_codes
     final_grid = [all_pixel_codes[i * GRID_W:(i + 1) * GRID_W] for i in range(GRID_H)]
 
-    # 生成图纸
+    # ========== 生成图纸 ==========
     CELL_SIZE = 22
     PADDING_L = 40
     PADDING_T = 40
@@ -123,7 +179,6 @@ if uploaded_file is not None:
         font = ImageFont.load_default()
         small_font = ImageFont.load_default()
 
-    # 画主网格
     for y in range(GRID_H):
         for x in range(GRID_W):
             code = final_grid[y][x]
@@ -135,23 +190,20 @@ if uploaded_file is not None:
             draw.rectangle([x0, y0, x1, y1], fill=color, outline=(220, 220, 220))
             text_color = (255, 255, 255) if sum(color) < 400 else (0, 0, 0)
             draw.text((x0 + 2, y0 + 5), code, fill=text_color, font=small_font)
-            # 画外部粗边框（内框线）
-            draw.rectangle([PADDING_L, PADDING_T, PADDING_L + GRID_W * CELL_SIZE, PADDING_T + GRID_H * CELL_SIZE],
-                           outline=(0, 0, 0), width=4)
 
-            # 画十字中轴线（横竖分割线）
-            mid_x = PADDING_L + (GRID_W // 2) * CELL_SIZE
-            mid_y = PADDING_T + (GRID_H // 2) * CELL_SIZE
-            draw.line([(mid_x, PADDING_T), (mid_x, PADDING_T + GRID_H * CELL_SIZE)], fill=(0, 0, 0), width=3)
-            draw.line([(PADDING_L, mid_y), (PADDING_L + GRID_W * CELL_SIZE, mid_y)], fill=(0, 0, 0), width=3)
+    draw.rectangle([PADDING_L, PADDING_T, PADDING_L + GRID_W * CELL_SIZE, PADDING_T + GRID_H * CELL_SIZE],
+                   outline=(0, 0, 0), width=4)
 
-    # 画坐标轴
+    mid_x = PADDING_L + (GRID_W // 2) * CELL_SIZE
+    mid_y = PADDING_T + (GRID_H // 2) * CELL_SIZE
+    draw.line([(mid_x, PADDING_T), (mid_x, PADDING_T + GRID_H * CELL_SIZE)], fill=(0, 0, 0), width=3)
+    draw.line([(PADDING_L, mid_y), (PADDING_L + GRID_W * CELL_SIZE, mid_y)], fill=(0, 0, 0), width=3)
+
     for x in range(GRID_W):
         draw.text((PADDING_L + x * CELL_SIZE + 6, 10), str(x + 1), fill=(0, 0, 0), font=font)
     for y in range(GRID_H):
         draw.text((5, PADDING_T + y * CELL_SIZE + 4), str(y + 1), fill=(0, 0, 0), font=font)
 
-    # 画图例
     sorted_codes = sorted(final_palette.keys(), key=lambda c: -all_pixel_codes.count(c))
     COLOR_BOX = 16
     LEGEND_SLOT_WIDTH = 85
@@ -170,17 +222,14 @@ if uploaded_file is not None:
         draw.text((legend_x + COLOR_BOX + 4, legend_y + 1), f"{code} ({count})", fill=(0, 0, 0), font=font)
         legend_x += LEGEND_SLOT_WIDTH
 
-    # 转成字节流以便网页显示和下载
     img_bytes = io.BytesIO()
     preview.save(img_bytes, format='PNG')
     img_bytes.seek(0)
 
-    # 在网页上显示
     st.subheader("生成的拼豆图纸")
     st.caption("💡 提示：苹果用户可长按下方图片保存至相册；安卓用户可直接点击下方的下载按钮。")
     st.image(preview, use_container_width=True)
 
-    # 下载按钮
     st.download_button(
         label="📥 下载拼豆图纸",
         data=img_bytes,
